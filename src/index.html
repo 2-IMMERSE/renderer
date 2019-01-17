@@ -1,0 +1,441 @@
+<!--/*
+Copyright 2018 Cisco and/or its affiliates
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/-->
+<!DOCTYPE html>
+<html>
+<head>
+    <script src="https://cdn.socket.io/socket.io-1.3.6.js"></script>
+    <script src="https://ajax.googleapis.com/ajax/libs/jquery/2.1.3/jquery.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/underscore.js/1.8.3/underscore-min.js"></script>
+    <script src="tv4.js"></script>
+    <script type="text/javascript" >
+
+		var VERSION = "v3";
+		var layoutServer = "https://layout-service.platform.2immerse.eu/layout/" + VERSION;
+        var websocketServer = "https://websocket-service.platform.2immerse.eu/layout";
+        var contextId = null;
+        /* the devices */
+        var deviceLayouts = {};
+        var devices = {};
+
+        /* drawing parameters */
+        var ctx;
+        var grd;
+        var titleHeight = 120;
+        var textHeight = 75;
+        var canvas;
+
+        var schemaFile = "pushmsg-schema.json" ;
+        console.log('loading schema: ' + schemaFile) ;
+        //var schema = JSON.parse(fs.readFileSync(schemaFile, 'utf8'));
+        var schema = null ;
+
+        $.getJSON(schemaFile, function(data) {
+          schema = data ;
+        });
+
+        /* -----------------------------------
+         * render
+         */
+
+        function renderDevice(title, components, offset, devProps) {
+            var y1 = offset.y;
+            var x1 = 0;
+
+            var clr = ctx.fillStyle;
+
+            // components
+            ctx.lineWidth = 2;
+            if (components.length ==0) {
+                x1 = offset.x + devProps.caps.displayWidth;
+                y1 += devProps.caps.displayHeight;
+            }
+            else
+            for (var j=0; j < components.length; j++) {
+                var r = components[j];
+                if (r.layout.hasOwnProperty('position')) {
+                  if (typeof(r.layout.position.x) == "string") {
+                    // convert %age back to pixels...
+                    r.layout.position.x = devProps.caps.displayWidth * parseFloat(r.layout.position.x) / 100.0 ;
+                    r.layout.size.width = devProps.caps.displayWidth * parseFloat(r.layout.size.width) / 100.0 ;
+                    r.layout.position.y = devProps.caps.displayHeight * parseFloat(r.layout.position.y) / 100.0 ;
+                    r.layout.size.height = devProps.caps.displayHeight * parseFloat(r.layout.size.height) / 100.0 ;
+                  }
+
+                  ctx.beginPath();
+                  ctx.rect(r.layout.position.x +offset.x, r.layout.position.y+ offset.y+textHeight, r.layout.size.width, r.layout.size.height);
+                  ctx.fillStyle = grd;
+                  ctx.fill();
+                  ctx.fillStyle = clr;
+                  ctx.fillText(r.componentId, r.layout.position.x+(r.layout.size.width)/2-50+offset.x, r.layout.position.y+(r.layout.size.height)/2+ offset.y+textHeight);
+                  ctx.stroke();
+
+                  if (r.layout.position.y + offset.y + textHeight + r.layout.size.height > y1)
+                      y1 = r.layout.position.y + offset.y + textHeight + r.layout.size.height;
+                  if (r.layout.position.x+offset.x  + r.layout.size.width > x1)
+                      x1 = r.layout.position.x+offset.x  + r.layout.size.width;
+
+                //console.log("set x1=" + x1 + " for width " + r.layout.size.width + ", and y1=" + y1 + " for height " + r.layout.size.height);
+              }
+            }
+
+            // device name
+            ctx.beginPath();
+            ctx.lineWidth = 0.1;
+            ctx.rect(offset.x , offset.y-titleHeight, 1000, titleHeight-20);
+            ctx.fillStyle = clr;
+            ctx.fillText(title , 5+offset.x, offset.y-40);
+            ctx.fillText('(' + devProps.caps.displayWidth + 'x' + devProps.caps.displayHeight + ')', 5+offset.x, offset.y+30);
+            //ctx.fillText(title + '  (' + devProps.caps.displayWidth + 'x' + devProps.caps.displayHeight + ')', 5+offset.x, offset.y-40);
+            ctx.stroke();
+
+
+            // device bounds
+            ctx.beginPath();
+            ctx.lineWidth = 8;
+            ctx.rect(offset.x, offset.y+textHeight, devProps.caps.displayWidth, devProps.caps.displayHeight);
+            ctx.stroke();
+
+            if (x1 < devProps.caps.displayWidth + offset.x)
+                x1 = devProps.caps.displayWidth + offset.x;
+
+            return {x: x1, y: y1};
+        }
+
+        function renderLayout (devLayouts) {
+            var colors = [ 'red', 'green', 'purple', 'orange', 'brown', 'cyan', 'magenta', 'violet', 'teal', 'navy', 'grey'];
+            var clr = 0;
+            var offset = { x: 0, y: titleHeight};
+            var bounds = { x: 0, y: 0};
+
+            ctx.scale(4.0, 4.0);
+            ctx.clearRect (0, 0, canvas.width, canvas.height);
+            ctx.scale(0.25, 0.25);
+
+            var ctr = 0;
+            for (devCtx in devLayouts) {
+
+                if ((contextId != null) && (devCtx != contextId)) { // filter by contextId
+                  continue ;
+                }
+
+                offset.x = 0;
+                bounds.x = 0;
+                if (ctr > 0)
+                    offset.y = bounds.y + titleHeight + 100;
+
+                ctx.beginPath();
+                ctx.lineWidth = 0.1;
+                ctx.rect(offset.x, offset.y - titleHeight, 1000, titleHeight - 20);
+                ctx.fillStyle = colors[clr];
+                ctx.fillText('Context ' + devCtx, 5 + offset.x, offset.y - 40);
+                ctx.stroke();
+                offset.y += titleHeight;
+                ctr++;
+
+                for (var kk=0; kk <  devLayouts[devCtx].length; kk++) {
+                    var dev = devLayouts[devCtx][kk].deviceId;
+                    if (devices[dev].caps.communalDevice)
+                        clr = 0;
+                    else {
+                        if (++clr >= colors.length)
+                            clr = 1;
+                    }
+
+                    ctx.strokeStyle = colors[clr];
+                    ctx.fillStyle = colors[clr];
+
+                    var first = true;
+                    if (devices[dev].regions != [] ) {
+                         for (var r in devices[dev].regions) {
+                            if (first) {
+                                ctx.beginPath();
+                                ctx.lineWidth = 0.1;
+                                ctx.rect(offset.x , offset.y-titleHeight, 1000, titleHeight-20);
+                                ctx.fillStyle = clr;
+                                ctx.fillText('Device: ' + dev + '  (' + devices[dev].caps.displayWidth + 'x' + devices[dev].caps.displayHeight + ')', 5+offset.x, offset.y-40);
+                                ctx.stroke();
+                                bounds.y += titleHeight;
+                                offset.y += titleHeight;
+                                first = false;
+                            }
+                            var components = [];
+                            _.map(devLayouts[devCtx][kk].components, function (c) {
+                                if (c.layout.hasOwnProperty('regionId') && c.layout.regionId == r)
+                                    components.push(c);
+                            });
+                            var b = renderDevice(r, components, offset,
+                                    { caps: {
+                                        displayWidth: devices[dev].regions[r].displayWidth,
+                                        displayHeight: devices[dev].regions[r].displayHeight
+                                    }});
+                            if (b.y > bounds.y)
+                                bounds.y = b.y;
+                            if (b.x > bounds.x)
+                                bounds.x = b.x;
+                            offset.x = bounds.x + 600;
+                        }
+                    }
+                    if (first == true) {
+                        var b = renderDevice('Device: ' + dev, devLayouts[devCtx][kk].components, offset, devices[dev]);
+                        if (b.y  > bounds.y)
+                            bounds.y = b.y;
+                        if (b.x > bounds.x)
+                            bounds.x = b.x;
+                        offset.x = bounds.x + 200;
+                        first = false;
+                    }
+                }
+
+                bounds.y += titleHeight;
+            }
+        }
+
+
+        function initDrawContext () {
+            canvas = document.getElementById("myCanvas");
+            ctx = canvas.getContext("2d");
+            ctx.scale(0.25, 0.25);
+            ctx.font = "70px Verdana";
+            ctx.fillStyle = "#cccc99";
+            grd = ctx.createLinearGradient(0, 0, 6000, 3000);
+            grd.addColorStop(0, 'gold'); //'#FEAFFA');
+            grd.addColorStop(0.1, '#AA7733');
+            grd.addColorStop(0.2, '#3A37F3');
+            grd.addColorStop(0.3, '#AAAA55');
+            grd.addColorStop(0.4, '#FFAA44');
+            grd.addColorStop(0.5, '#6677AA');
+            grd.addColorStop(0.6, '#4488FF');
+            grd.addColorStop(0.7, '#CCAA88');
+            grd.addColorStop(0.8, '#FFAA44');
+            grd.addColorStop(0.9, '#CCCCCC');
+            grd.addColorStop(0.95, '#FEAFFA');
+            grd.addColorStop(1.0, 'violet');
+        }
+
+
+
+
+        /* ---------------------------------------------------------------
+         * query layout server for current context devices and layout
+         * */
+
+         function room (ctxName, id) {
+            return JSON.stringify({room: ctxName + '.' + id, name: "Renderer" });
+         }
+
+         function refreshContext (contextId, register) {
+            if (! deviceLayouts.hasOwnProperty(contextId) && contextId!='all')
+                deviceLayouts[contextId] = [];
+
+            jQuery.get(layoutServer + "/context/" + contextId + "?reqDeviceId=layoutRenderer", function (response) {
+                //console.log('got context ' + contextId + ' response: ***\n' + JSON.stringify(response) + '\n***');
+                var context = response.contextId;
+                /* store layout snapshot */
+
+               for (var i = 0; i < response.layout.length; i++) {
+                    if (!_.find(deviceLayouts[context],  function (item) { return item.deviceId == response.layout[i].deviceId;})) {
+                        deviceLayouts[context].push(response.layout[i]);
+                        console.log('adding device ' + response.layout[i].deviceId + " to context " + context);
+                        refreshLayout ();
+                    }
+                }
+
+                for (dev in response.devices) {
+                    if (! devices.hasOwnProperty(dev)) {
+                        console.log("joining room (4) " + room(context, dev));
+                        socket.emit('JOIN', room(context, dev));
+                    }
+                    devices[dev] = response.devices[dev];
+                }
+
+                deviceLayouts[context] =
+                    _.sortBy (deviceLayouts[context], function(item) {
+                        devices[ item.deviceId].caps.communalDevice==true ? 1 : 2;
+                    });
+
+                if (register) {
+                    /* register for ongoing updates */
+                    var deviceList = response.deviceIds;
+                    socket.on('connect', function (data) {
+                        for (var i = 0; i < deviceList.length; i++) {
+                            if (! devices.hasOwnProperty(dev)) {
+                                console.log("joining room (2) " + room(context, deviceList[i]));
+                                socket.emit('JOIN', room(context, deviceList[i]));
+                                devices[dev] = {};
+                            }
+                        }
+                        refreshLayout ();
+                    });
+                    socket.on('disconnect', function (data) {
+                        for (var i = 0; i < deviceList.length; i++) {
+                            console.log("disconnected, leaving room " + room(context, deviceList[i]));
+                            socket.emit('LEAVE', JSON.stringify({room: room(context, deviceList[i]), name: "Device " + deviceList[i]}));
+                        }
+                    });
+                }
+
+                renderLayout(deviceLayouts);
+            });
+        }
+
+        function refreshLayout () {
+            /* get context list */
+            jQuery.get( layoutServer + "/context"+"?deviceId=*&reqDeviceId=layoutRenderer", function( response ) {
+                var contexts = response;
+                /* get device list for each context */
+                for (var j=0; j < contexts.length; j++) {
+                    refreshContext (contexts[j], false);
+                }
+            });
+
+
+            function dumpLayoutInfo (deviceLayout) {
+                for (var i=0; i < deviceLayout.length; i++ ) {
+                    console.log ('!!! deviceLayouts  has: ' + deviceLayout[i].deviceId
+                            + ": " + (devices[deviceLayout.deviceId].caps.communalDevice==true ? "communal " : "personal ")
+                            +  _.pluck(deviceLayout[i].components, 'componentId'));
+                }
+            }
+        }
+
+
+        /* -------------------------------------------
+         * register for context/layout updates
+         */
+
+        function registerForDeviceUpdates() {
+            socket = io(websocketServer);
+
+            /* register for new context updates */
+            socket.emit('JOIN',room ('all' , 'contexts'));
+
+            socket.on('EVENT', function (data) {
+                console.log("received  event: " + JSON.stringify(data));
+                if (data.message.hasOwnProperty('update')) {
+
+                    if (!tv4.validate(data, schema)) {
+                      console.warn("update message invalid: " + JSON.stringify(tv4.error, null, 2)) ;
+                      $("#pushmsgstatus").text("update message invalid (message id: " + data.message.update.messageId + ")");
+                    }
+                    var context = data.room.split(".")[0];
+                    var curDevice = data.room.split(".")[1];
+                    var elem = _.find (deviceLayouts[context], function (item) {
+                                        if (item.deviceId == curDevice) {
+                                            item.components = data.message.update.components;
+                                            return true;
+                                        } else
+                                        return false;
+                                });
+                    if (elem == null)
+                        deviceLayouts[context].push(data.message.update); //{deviceId: data.message.update.deviceId, components: data.message.update.components});
+                    deviceLayouts[context]
+                        = _.sortBy (deviceLayouts[context], function(item) {  return ((devices[ item.deviceId].caps.communalDevice==true) ? 1 : 2);});
+
+                   renderLayout(deviceLayouts);
+                }
+                else
+                if (data.message.hasOwnProperty('create')) {
+                  if (!tv4.validate(data, schema)) {
+                    console.warn("create message invalid: " + JSON.stringify(tv4.error, null, 2)) ;
+                    $("#pushmsgstatus").text("create message invalid (message id: " + data.message.create.messageId + ")");
+                  }
+                }
+                else
+                if (data.message.hasOwnProperty('destroy')) {
+                  if (!tv4.validate(data, schema)) {
+                    console.warn("destroy message invalid: " + JSON.stringify(tv4.error, null, 2)) ;
+                    $("#pushmsgstatus").text("destroy message invalid (message id: " + data.message.destroy.messageId + ")");
+                  }
+                    /* the layout server will have re-calculated the layout and pushed updates */
+                    refreshLayout ();
+                }
+                else
+                if (data.message.hasOwnProperty('device')) {
+                      console.log("received DEVICE event " + room(data.message.device.context, data.message.device.id));
+                    if (! devices.hasOwnProperty(data.message.device.id)) {
+                         console.log("joining room (0) " + room(data.message.device.context, data.message.device.id));
+                         socket.emit('JOIN', room(data.message.device.context, data.message.device.id));
+                     }
+                    devices[data.message.device.id] = data.message.device;
+                    refreshContext(data.message.device.context, false);
+                }
+                else
+                if (data.message.hasOwnProperty('context')) {
+                    console.log("joining room (3) " + room (data.message.context, 'devices'));
+                    socket.emit('JOIN', room (data.message.context, 'devices'));
+                    deviceLayouts[data.message.context] = [];
+                    renderLayout(deviceLayouts);
+                }
+                else
+                if (data.message.hasOwnProperty('remove')) {
+                    var cid = data.room.split(".")[0];
+                    var devid = data.message.remove;
+                    socket.emit('LEAVE', room (cid, devid));
+                    delete devices[devid];
+                    deviceLayouts[cid] = _.reject (deviceLayouts[cid], function (item) {return item.deviceId == devid;});
+                    renderLayout(deviceLayouts);
+                    console.log ('removed device ' + devid );
+                }
+            });
+
+
+            jQuery.get( layoutServer + "/context"+"?deviceId=*&reqDeviceId=layoutRenderer", function( response ) {
+                var contexts = response;
+                for (var j=0; j < contexts.length; j++) {
+                    console.log("joining room (1) " + room (contexts[j] , 'devices'));
+                    socket.emit('JOIN',room (contexts[j] , 'devices'));
+                    refreshContext (contexts[j], true);
+               }
+            });
+         }
+
+         $.urlParam = function(name){
+            var results = new RegExp('[\?&]' + name + '=([^&#]*)').exec(window.location.href);
+            if (results==null){
+               return null;
+            }
+            else{
+               return results[1] || 0;
+            }
+        }
+
+
+        window.onload = function() {
+            // adopt url params for service endpoints if supplied...
+            var layoutUrl = $.urlParam('layoutUrl');
+            if (layoutUrl != null) {
+              layoutServer = layoutUrl ;
+            }
+            var websocketUrl = $.urlParam('websocketUrl');
+            if (websocketUrl != null) {
+              websocketServer = websocketUrl ;
+            }
+            var contextIdParam = $.urlParam('contextId');
+            if (contextIdParam != null) {
+              contextId = contextIdParam ;
+            }
+
+            initDrawContext ();
+            registerForDeviceUpdates();
+        }
+
+   </script>
+</head>
+<body>
+    <div>Push Message Status: <span id="pushmsgstatus">OK</span></div>
+    <canvas id="myCanvas" width="6000" height="6000" style="border:1px solid #d3d3d3;"></canvas>
+</body>
+</html>
